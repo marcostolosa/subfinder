@@ -28,10 +28,10 @@ func showBanner() {
 }
 
 // normalRunTasks runs the normal startup tasks
-func (options *Options) normalRunTasks() {
-	configFile, err := UnmarshalRead(options.ConfigFile)
+func (options *Options) normalRunTasks(configPath string) {
+	configFile, err := UnmarshalRead(configPath)
 	if err != nil {
-		gologger.Fatal().Msgf("Could not read configuration file %s: %s\n", options.ConfigFile, err)
+		gologger.Fatal().Msgf("Could not read configuration file %s: %s\n", configPath, err)
 	}
 
 	// If we have a different version of subfinder installed
@@ -42,9 +42,9 @@ func (options *Options) normalRunTasks() {
 		configFile.Recursive = passive.DefaultRecursiveSources
 		configFile.Version = Version
 
-		err = configFile.MarshalWrite(options.ConfigFile)
+		err = configFile.MarshalWrite(configPath)
 		if err != nil {
-			gologger.Fatal().Msgf("Could not update configuration file to %s: %s\n", options.ConfigFile, err)
+			gologger.Fatal().Msgf("Could not update configuration file to %s: %s\n", configPath, err)
 		}
 	}
 	options.YAMLConfig = configFile
@@ -52,7 +52,7 @@ func (options *Options) normalRunTasks() {
 
 // firstRunTasks runs some housekeeping tasks done
 // when the program is ran for the first time
-func (options *Options) firstRunTasks() {
+func (options *Options) firstRunTasks(configPath string) {
 	// Create the configuration file and display information
 	// about it to the user.
 	config := ConfigFile{
@@ -66,11 +66,11 @@ func (options *Options) firstRunTasks() {
 		Recursive: passive.DefaultRecursiveSources,
 	}
 
-	err := config.MarshalWrite(options.ConfigFile)
+	err := config.MarshalWrite(configPath)
 	if err != nil {
-		gologger.Fatal().Msgf("Could not write configuration file to %s: %s\n", options.ConfigFile, err)
+		gologger.Fatal().Msgf("Could not write configuration file to %s: %s\n", configPath, err)
 	}
 	options.YAMLConfig = config
 
-	gologger.Info().Msgf("Configuration file saved to %s\n", options.ConfigFile)
+	gologger.Info().Msgf("Configuration file saved to %s\n", configPath)
 }

@@ -1,14 +1,17 @@
 package runner
 
 import (
-	"flag"
+	"fmt"
 	"io"
 	"net"
 	"os"
-	"path"
+	"os/user"
+	"path/filepath"
 	"reflect"
 	"strings"
 
+	"github.com/projectdiscovery/fileutil"
+	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/gologger"
 )
 
@@ -45,47 +48,89 @@ type Options struct {
 	LocalIP            net.IP // LocalIP is the IP address used as local bind
 	LocalIPString      string // LocalIPString is the IP address in string format got from command line
 
-	YAMLConfig ConfigFile // YAMLConfig contains the unmarshalled yaml config file
+	YAMLConfig     ConfigFile // YAMLConfig contains the unmarshalled yaml config file
+	ProviderConfig string     // ProviderConfig is the location of the provider config file.
 }
 
 // ParseOptions parses the command line flags provided by a user
 func ParseOptions() *Options {
 	options := &Options{}
-
-	config, err := GetConfigDirectory()
-	if err != nil {
-		// This should never be reached
-		gologger.Fatal().Msgf("Could not get user home: %s\n", err)
+	var err error
+	// config, err := GetConfigDirectory()
+	// if err != nil {
+	// 	// This should never be reached
+	// 	gologger.Fatal().Msgf("Could not get user home: %s\n", err)
+	// }
+	var (
+		defaultConfigLocation         = filepath.Join(userHomeDir(), ".config/subfinder/config.yaml")
+		defaultProviderConfigLocation = filepath.Join(userHomeDir(), ".config/subfinder/provider-config.yaml")
+	)
+	// Migrate config to provider config
+	if fileutil.FileExists(defaultConfigLocation) && !fileutil.FileExists(defaultProviderConfigLocation) {
+		if _, err := UnmarshalRead(defaultConfigLocation); err == nil {
+			gologger.Info().Msg("Detected old config.yaml file, trying to rename it to provider-config.yaml\n")
+			if err := os.Rename(defaultConfigLocation, defaultProviderConfigLocation); err != nil {
+				gologger.Fatal().Msgf("Could not rename existing config (config.yaml) to provider config (provider-config.yaml): %s\n", err)
+			} else {
+				gologger.Info().Msg("Renamed config.yaml to provider-config.yaml successfully\n")
+			}
+		} else {
+			fmt.Println(err)
+		}
 	}
 
-	flag.BoolVar(&options.Verbose, "v", false, "Show Verbose output")
-	flag.BoolVar(&options.NoColor, "nC", false, "Don't Use colors in output")
-	flag.IntVar(&options.Threads, "t", 10, "Number of concurrent goroutines for resolving")
-	flag.IntVar(&options.Timeout, "timeout", 30, "Seconds to wait before timing out")
-	flag.IntVar(&options.MaxEnumerationTime, "max-time", 10, "Minutes to wait for enumeration results")
-	flag.StringVar(&options.Domain, "d", "", "Domain to find subdomains for")
-	flag.StringVar(&options.DomainsFile, "dL", "", "File containing list of domains to enumerate")
-	flag.StringVar(&options.OutputFile, "o", "", "File to write output to (optional)")
-	flag.StringVar(&options.OutputDirectory, "oD", "", "Directory to write enumeration results to (optional)")
-	flag.BoolVar(&options.JSON, "json", false, "Write output in JSON lines Format")
-	flag.BoolVar(&options.CaptureSources, "collect-sources", false, "Output host source as array of sources instead of single (first) source")
-	flag.BoolVar(&options.JSON, "oJ", false, "Write output in JSON lines Format")
-	flag.BoolVar(&options.HostIP, "oI", false, "Write output in Host,IP format")
-	flag.BoolVar(&options.Silent, "silent", false, "Show only subdomains in output")
-	flag.BoolVar(&options.Recursive, "recursive", false, "Use only recursive subdomain enumeration sources")
-	flag.BoolVar(&options.All, "all", false, "Use all sources (slow) for enumeration")
-	flag.StringVar(&options.Sources, "sources", "", "Comma separated list of sources to use")
-	flag.BoolVar(&options.ListSources, "ls", false, "List all available sources")
-	flag.StringVar(&options.ExcludeSources, "exclude-sources", "", "List of sources to exclude from enumeration")
-	flag.StringVar(&options.Resolvers, "r", "", "Comma-separated list of resolvers to use")
-	flag.StringVar(&options.ResolverList, "rL", "", "Text file containing list of resolvers to use")
-	flag.BoolVar(&options.RemoveWildcard, "nW", false, "Remove Wildcard & Dead Subdomains from output")
-	flag.StringVar(&options.LocalIPString, "b", "", "IP address to be used as local bind")
-	flag.StringVar(&options.ConfigFile, "config", path.Join(config, "config.yaml"), "Configuration file for API Keys, etc")
-	flag.StringVar(&options.Proxy, "proxy", "", "HTTP proxy to use with subfinder")
-	flag.IntVar(&options.RateLimit, "rate-limit", 0, "Maximum number of HTTP requests to send per second")
-	flag.BoolVar(&options.Version, "version", false, "Show version of subfinder")
-	flag.Parse()
+	flagSet := goflags.NewFlagSet()
+	flagSet.SetDescription(`Subfinder is a subdomain discovery tool that discovers subdomains for websites by using passive online sources.`)
+
+	createGroup(flagSet, "input", "Input",
+		flagSet.StringVarP(&options.Domain, "domain", "d", "", "Domain to find subdomains for"),
+		flagSet.StringVarP(&options.DomainsFile, "list", "dL", "", "File containing list of domains to enumerate"),
+	)
+
+	createGroup(flagSet, "source", "Source",
+		flagSet.StringVarP(&options.Sources, "sources", "s", "", "Sources to use for enumeration (-s crtsh,bufferover"),
+		flagSet.BoolVar(&options.Recursive, "recursive", false, "Sources to use supports recursive enumeration"),
+		flagSet.BoolVar(&options.All, "all", false, "Use all sources (slow) for enumeration"),
+		flagSet.StringVarP(&options.ExcludeSources, "exclude-sources", "es", "", "Sources to exclude from enumeration (-es archiveis,zoomeye)"),
+	)
+
+	createGroup(flagSet, "rate-limit", "Rate-limit",
+		flagSet.IntVar(&options.RateLimit, "rate-limit", 0, "Maximum number of HTTP requests to send per second"),
+		flagSet.IntVar(&options.Threads, "t", 10, "Number of concurrent goroutines for resolving (-active only)"),
+	)
+
+	createGroup(flagSet, "output", "Output",
+		flagSet.StringVarP(&options.OutputFile, "output", "o", "", "File to write output to (optional)"),
+		flagSet.BoolVarP(&options.JSON, "json", "oJ", false, "Write output in JSONL(ines) format"),
+		flagSet.StringVarP(&options.OutputDirectory, "output-dir", "oD", "", "Directory to write output (-dL only)"),
+		flagSet.BoolVarP(&options.CaptureSources, "collect-sources", "cs", false, "Include all sources in the output (-json only)"),
+		flagSet.BoolVarP(&options.HostIP, "ip", "oI", false, "Include host IP in output (-active only)"),
+	)
+
+	createGroup(flagSet, "configuration", "Configuration",
+		flagSet.StringVar(&options.ConfigFile, "config", defaultConfigLocation, "Configuration file for API Keys, etc"),
+		flagSet.StringVarP(&options.ProviderConfig, "provider-config", "pc", defaultProviderConfigLocation, "provider configuration file path"),
+		flagSet.StringVar(&options.Resolvers, "r", "", "Comma separated list of resolvers to use"),
+		flagSet.StringVarP(&options.ResolverList, "rlist", "rL", "", "File containing list of resolvers to use"),
+		flagSet.BoolVarP(&options.RemoveWildcard, "active", "nW", false, "Display active subdomains only"),
+		flagSet.StringVarP(&options.LocalIPString, "bind-ip", "b", "", "IP address to be used as local bind"),
+		flagSet.StringVar(&options.Proxy, "proxy", "", "HTTP proxy to use with subfinder"),
+	)
+
+	createGroup(flagSet, "debug", "Debug",
+		flagSet.BoolVar(&options.Silent, "silent", false, "Show only subdomains in output"),
+		flagSet.BoolVar(&options.Version, "version", false, "Show version of subfinder"),
+		flagSet.BoolVar(&options.Verbose, "v", false, "Show Verbose output"),
+		flagSet.BoolVarP(&options.NoColor, "nc", "nC", false, "Disable color in output"),
+		flagSet.BoolVar(&options.ListSources, "ls", false, "List all available sources"),
+	)
+
+	createGroup(flagSet, "optimization", "Optimization",
+		flagSet.IntVar(&options.Timeout, "timeout", 30, "Seconds to wait before timing out"),
+		flagSet.IntVar(&options.MaxEnumerationTime, "max-time", 10, "Minutes to wait for enumeration results"),
+	)
+
+	_ = flagSet.Parse()
 
 	// Default output is stdout
 	options.Output = os.Stdout
@@ -107,11 +152,28 @@ func ParseOptions() *Options {
 	// Check if the config file exists. If not, it means this is the
 	// first run of the program. Show the first run notices and initialize the config file.
 	// Else show the normal banners and read the yaml fiile to the config
-	if !CheckConfigExists(options.ConfigFile) {
-		options.firstRunTasks()
-	} else {
-		options.normalRunTasks()
+	// if !CheckConfigExists(options.ConfigFile) {
+	// 	options.firstRunTasks()
+	// } else {
+	// 	options.normalRunTasks()
+	// }
+	/*
+		Fresh app run: no config->generates config,provider with default
+		Existing app:config,no
+			case 1: No config.yaml -> so no migration happens
+			after flag.Parse -> config.yaml,
+
+			case2:config.yaml,no provider->
+
+			Scenario: we have a config,provider file
+
+	*/
+	//generate default provider file if not found
+	if !fileutil.FileExists(defaultProviderConfigLocation) {
+		fmt.Println("xxxxxxxxxprovider not found ->generating new")
+		options.firstRunTasks(defaultProviderConfigLocation)
 	}
+	options.normalRunTasks(options.ProviderConfig)
 
 	if options.ListSources {
 		listSources(options)
@@ -165,4 +227,19 @@ func listSources(options *Options) {
 
 func (options *Options) preProcessOptions() {
 	options.Domain, _ = sanitize(options.Domain)
+}
+
+func createGroup(flagSet *goflags.FlagSet, groupName, description string, flags ...*goflags.FlagData) {
+	flagSet.SetGroup(groupName, description)
+	for _, currentFlag := range flags {
+		currentFlag.Group(groupName)
+	}
+}
+
+func userHomeDir() string {
+	usr, err := user.Current()
+	if err != nil {
+		gologger.Fatal().Msgf("Could not get user home directory: %s\n", err)
+	}
+	return usr.HomeDir
 }
